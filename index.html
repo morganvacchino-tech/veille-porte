@@ -8,8 +8,13 @@
 
   Tout passe dans le fragment (#…), que le navigateur n'envoie jamais à l'hébergeur :
     #b=<déploiement>&p=AAAA-MM-JJ&t=<jeton>                      la page
-    #b=<déploiement>&a=<action>&c=<clé>&r=<raison>&p=…&t=…       la confirmation d'un bouton
+    #b=<déploiement>&a=<action>&c=<clé>&r=<raison>&p=…&t=…       un bouton
   Elle ne contient aucune donnée : elle peut être publique.
+
+  Les boutons de la page : un clic dans la page affichée enregistre tout de suite (POST « enregistrer »),
+  sans quitter la page ; le bouton passe à « ✓ … » et un lien « Annuler » apparaît à côté. Un lien de
+  bouton ouvert seul (nouvel onglet, aperçu de lien, antivirus) n'enregistre rien : il mène à la
+  confirmation, comme avant.
 -->
 <html lang="fr">
 <head>
@@ -26,6 +31,11 @@ body{margin:0;background:#f4f2ee;color:#1f2328;font:16px/1.5 -apple-system,Blink
 .carte button{font:inherit;background:#1d5f8c;color:#fff;border:0;border-radius:8px;padding:10px 18px;cursor:pointer}
 .carte button:disabled{background:#8aa9bf;cursor:default}.fait{color:#2d7a46;font-weight:600}.rate{color:#a33a3a}
 .carte a{color:#1d5f8c}
+.btn.note{background:#e3f1e7;border-color:#2d7a46;color:#1e5631;font-weight:600}
+.btn.en-cours{opacity:.6;cursor:progress}
+.annuler{font:inherit;font-size:12px;background:none;border:0;padding:2px 4px;color:#1d5f8c;text-decoration:underline;cursor:pointer}
+.annuler:disabled{color:#8aa9bf;cursor:progress}
+.rate-clic{color:#a33a3a;font-size:12px}
 </style>
 <style id="style-page"></style>
 </head>
@@ -37,16 +47,30 @@ body{margin:0;background:#f4f2ee;color:#1f2328;font:16px/1.5 -apple-system,Blink
   var FORME_DEPLOIEMENT = /^[A-Za-z0-9_-]{20,200}$/;
   var pages = {};       // date → HTML de la page, pour revenir sans recharger
   var defilement = {};  // date → position, pour revenir au même endroit
+  var etats = {};       // date → { clé: { a, r } } : le retour valable de chaque offre de la page
 
-  function lireFragment() {
+  function lireCouples(texte) {
     var q = {};
-    location.hash.replace(/^#/, '').split('&').forEach(function (kv) {
+    texte.split('&').forEach(function (kv) {
       var i = kv.indexOf('=');
       if (i > 0) {
         try { q[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1).replace(/\+/g, ' ')); } catch (e) { /* ignoré */ }
       }
     });
     return q;
+  }
+
+  function lireFragment() {
+    return lireCouples(location.hash.replace(/^#/, ''));
+  }
+
+  // Ce que porte un lien de bouton : après « # » (par la porte) ou après « ? » (lien direct au pont).
+  function lireBouton(lien) {
+    var href = lien.getAttribute('href') || '';
+    var i = href.indexOf('#');
+    if (i < 0) { i = href.indexOf('?'); }
+    var q = i < 0 ? {} : lireCouples(href.slice(i + 1));
+    return q.a && q.c ? q : null;
   }
 
   function appeler(q, corps) {
@@ -97,14 +121,120 @@ body{margin:0;background:#f4f2ee;color:#1f2328;font:16px/1.5 -apple-system,Blink
     document.title = doc.title || 'Ta veille emploi';
     Array.prototype.forEach.call(doc.querySelectorAll('script'), function (s) { s.remove(); });
     document.body.innerHTML = doc.body.innerHTML;
+    Object.keys(etats[date] || {}).forEach(function (c) { peindre(c, etats[date][c]); });
     window.scrollTo(0, defilement[date] || 0);
   }
+
+  // ---------- Les boutons, d'un seul clic ----------
+
+  function boutonsDe(cle) {
+    return Array.prototype.filter.call(document.querySelectorAll('a.btn'), function (b) {
+      var q = lireBouton(b);
+      return q && q.c === cle;
+    });
+  }
+
+  function sansSymbole(texte) {
+    return texte.replace(/^[^0-9A-Za-zÀ-ÿ]+/, '').replace(/…$/, '');
+  }
+
+  // Met les boutons d'une offre dans l'état `etat` ({ a, r } ou null) ; `enCours` : pas encore confirmé.
+  function peindre(cle, etat, enCours) {
+    var boutons = boutonsDe(cle);
+    boutons.forEach(function (b) {
+      if (!b.hasAttribute('data-libelle')) { b.setAttribute('data-libelle', b.textContent); }
+      var q = lireBouton(b);
+      var choisi = Boolean(etat) && q.a === etat.a && (q.r || '') === (etat.r || '');
+      b.textContent = choisi ? '✓ ' + sansSymbole(b.getAttribute('data-libelle')) : b.getAttribute('data-libelle');
+      b.classList.toggle('note', choisi);
+      b.classList.toggle('en-cours', choisi && Boolean(enCours));
+      var details = b.closest('details');
+      var resume = details && details.querySelector('summary');
+      if (resume && q.a === 'pas_pour_moi') {
+        if (!resume.hasAttribute('data-libelle')) { resume.setAttribute('data-libelle', resume.textContent); }
+        if (choisi) {
+          resume.textContent = '✓ Pas pour moi : ' + sansSymbole(b.getAttribute('data-libelle'));
+          details.open = false;
+        }
+        resume.classList.toggle('note', Boolean(etat) && etat.a === 'pas_pour_moi');
+        if (!etat || etat.a !== 'pas_pour_moi') { resume.textContent = resume.getAttribute('data-libelle'); }
+      }
+    });
+    if (!boutons.length) { return; }
+    var zone = boutons[0].closest('.fb') || boutons[0].parentNode;
+    Array.prototype.forEach.call(zone.querySelectorAll('.annuler, .rate-clic'), function (x) { x.remove(); });
+    if (etat && !enCours) {
+      var annuler = document.createElement('button');
+      annuler.type = 'button';
+      annuler.className = 'annuler';
+      annuler.setAttribute('data-cle', cle);
+      annuler.textContent = 'Annuler';
+      zone.appendChild(annuler);
+    }
+  }
+
+  function signalerEchec(cle) {
+    var boutons = boutonsDe(cle);
+    if (!boutons.length) { return; }
+    var zone = boutons[0].closest('.fb') || boutons[0].parentNode;
+    var m = document.createElement('span');
+    m.className = 'rate-clic';
+    m.textContent = 'Pas enregistré. Réessaie dans un moment.';
+    zone.appendChild(m);
+  }
+
+  var enVol = {};  // clé → true pendant un enregistrement : pas de double clic
+  function envoyer(page, cle, demande, provisoire) {
+    if (enVol[cle]) { return; }
+    var avant = (etats[page.p] || {})[cle] || null;
+    enVol[cle] = true;
+    peindre(cle, provisoire, true);
+    appeler(page, Object.assign({ action: 'enregistrer', c: cle, p: page.p }, demande)).then(function (r) {
+      if (r.erreur) { throw new Error(r.erreur); }
+      var etat = r.etat && r.etat.p === page.p ? { a: r.etat.a, r: r.etat.r || '' } : null;
+      etats[page.p] = etats[page.p] || {};
+      etats[page.p][cle] = etat;
+      if (r.etat === undefined) { etats[page.p][cle] = provisoire; }  // ancien pont : il ne renvoie pas l'état
+      peindre(cle, etats[page.p][cle]);
+    }).catch(function () {
+      peindre(cle, avant);
+      signalerEchec(cle);
+    }).then(function () { delete enVol[cle]; });
+  }
+
+  // Seul un clic dans la page affichée enregistre : un aperçu de lien ou un antivirus ouvre l'adresse,
+  // il ne clique pas dans la page.
+  document.addEventListener('click', function (ev) {
+    if (!dateAffichee || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) { return; }
+    var page = lireFragment();
+    // Le menu de la page (#offres…) : défiler sans toucher au fragment, qui porte le jeton.
+    var ancre = ev.target.closest && ev.target.closest('a[href^="#"]');
+    if (ancre) {
+      ev.preventDefault();
+      var cible = document.getElementById(ancre.getAttribute('href').slice(1));
+      if (cible) { cible.scrollIntoView(); }
+      return;
+    }
+    var annuler = ev.target.closest && ev.target.closest('button.annuler');
+    if (annuler) {
+      ev.preventDefault();
+      return envoyer(page, annuler.getAttribute('data-cle'), { a: 'annuler', r: '' }, null);
+    }
+    var lien = ev.target.closest && ev.target.closest('a.btn');
+    var q = lien && lireBouton(lien);
+    if (!q) { return; }
+    ev.preventDefault();
+    var actuel = (etats[page.p] || {})[q.c];
+    if (actuel && actuel.a === q.a && (actuel.r || '') === (q.r || '')) { return; }  // déjà noté
+    envoyer(page, q.c, { a: q.a, r: q.r || '' }, { a: q.a, r: q.r || '' });
+  });
 
   function voir(q) {
     if (pages[q.p]) { return afficherPage(q.p, pages[q.p]); }
     appeler(q, { action: 'voir', p: q.p }).then(function (r) {
       if (r.erreur) { return erreur(r.erreur); }
       pages[q.p] = r.html;
+      etats[q.p] = r.retours || {};
       afficherPage(q.p, r.html);
     }).catch(function () { erreur(); });
   }
